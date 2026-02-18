@@ -3,7 +3,6 @@
 # ==============================================================================
 # Instalador SPFBL
 # Documentação em:
-# Autor: Percio Castelo | contato@perciocastelo.com.br | percio@evolya.com.br
 # Refazendo o processo de instalação do SPFBL, com melhorias significativas para garantir uma instalação mais robusta, amigável e compatível com diferentes sistemas Linux. O script agora inclui:
 # - Detecção automática do sistema de init (Systemd ou Init.d) e configuração adequada
 # - Verificação e instalação automática do Java, com fallback para download manual se necessário
@@ -99,6 +98,26 @@ die() {
     exit 1
 }
 
+# Valida hostname conforme regras básicas RFC (labels 1-63, total <=253)
+is_valid_hostname() {
+    local host="$1"
+
+    [ -n "$host" ] || return 1
+    [ "${#host}" -le 253 ] || return 1
+    [[ "$host" == *.* ]] || return 1
+    [[ "$host" != *..* ]] || return 1
+
+    local IFS='.'
+    read -r -a labels <<< "$host"
+    [ "${#labels[@]}" -ge 2 ] || return 1
+
+    for label in "${labels[@]}"; do
+        [ -n "$label" ] || return 1
+        [ "${#label}" -le 63 ] || return 1
+        [[ "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+    done
+}
+
 # Spinner Visual
 exec_visual() {
     local msg="$1"; shift
@@ -138,7 +157,7 @@ echo -e "Diretório de Instalação: ${YELLOW}$INSTALL_DIR${NC}"
 
 # 1. Dependências e Java
 exec_visual "Atualizando apt" apt-get update
-exec_visual "Instalando dependencias" apt-get install wget git ncat nmap procps default-jre chrony -y
+exec_visual "Instalando dependencias" apt-get install wget git ncat nmap procps default-jre chrony cron -y
 
 # Garante Java
 if ! command -v java &> /dev/null; then
@@ -185,15 +204,22 @@ if [ ! -d "$INSTALL_DIR" ]; then
     cp client/spfbl.sh "$SPFBL_BIN/spfbl.sh"
     
     cd /root
-
-    fi
 fi
 
-chmod +x "$INSTALL_DIR/spfbl-init.sh"
+chmod +x "/etc/init.d/spfbl-init.sh"
 
 # 3. FIX HOSTNAME (Evita o erro de HTTP socket not binded)
 echo -e "${YELLOW}[CONFIG]${NC} Ajustando Hostname e URL..."
-REAL_HOSTNAME=$(hostname)
+REAL_HOSTNAME=$(hostname -f 2>/dev/null)
+if [ -z "$REAL_HOSTNAME" ] || [ "$REAL_HOSTNAME" = "(none)" ]; then
+    REAL_HOSTNAME=$(hostname)
+fi
+
+if ! is_valid_hostname "$REAL_HOSTNAME"; then
+    die "Hostname inválido: '$REAL_HOSTNAME'. Configure um hostname válido (ex.: mail.seudominio.com) e rode novamente."
+    exit 0
+fi
+
 if [ -f "$INSTALL_DIR/spfbl.conf" ]; then
     sed -i "s/^hostname=.*/hostname=$REAL_HOSTNAME/" "$INSTALL_DIR/spfbl.conf"
     sed -i "s|^url=.*|url=http://$REAL_HOSTNAME:9875/|" "$INSTALL_DIR/spfbl.conf"
