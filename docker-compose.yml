@@ -1,0 +1,19 @@
+services:
+  spfbl:
+    image: ubuntu-systemd
+    container_name: spfbl-server
+    hostname: ${SPFBL_HOSTNAME:-dev.evolya.com.br}
+    privileged: true
+    cgroup: host
+    restart: unless-stopped
+    mem_limit: ${SPFBL_MEM_LIMIT:-2g}
+    memswap_limit: ${SPFBL_MEMSWAP_LIMIT:-2g}
+    ports:
+      - "9877:9877"
+      - "9875:9875"
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ${SPFBL_HOST_PATH:-/home/spfbl}:/home/spfbl
+    command: ["/sbin/init"]

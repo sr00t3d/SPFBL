@@ -2,19 +2,25 @@
 
 # ==============================================================================
 # SPFBL - Automação de Whitelist (Client Side)
-# Detecta cPanel/Exim ou Zimbra/Postfix e configura o autoloader
+# Detecta cPanel/Exim ou Zimbra/Postfix e configura automação conforme wiki.
 # ==============================================================================
 
-# Definições
-SPFBL_CLIENT_BIN="/usr/local/bin/spfbl.sh"  # Caminho padrão do cliente SPFBL (ajustável)
-LOG_FILE="/var/log/spfbl_whitelist_config.log"
+: "${SPFBL_CLIENT_BIN:=/usr/local/bin/spfbl.sh}"
+: "${LOG_FILE:=/var/log/spfbl_whitelist_config.log}"
+: "${WHITELIST_CRON_SCHEDULE:=*/15 * * * *}"
+: "${SPFBL_SERVER_IP:=127.0.0.1}"
+: "${SPFBL_SERVER_HOSTNAME:=localhost}"
+: "${SPFBL_POLICY_PORT:=9877}"
+: "${SPFBL_ADMIN_PORT:=9875}"
+: "${SPFBL_AUTOWHITELIST_NONINTERACTIVE:=1}"
 
-# Cores
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
+
+ENVIRONMENT=""
 
 log() {
     echo -e "${GREEN}[$(date +'%F %T')]${NC} $1"
@@ -27,181 +33,220 @@ die() {
     exit 1
 }
 
-# Verifica root
-if [ "$EUID" -ne 0 ]; then die "Execute como root."; fi
+require_root() {
+    [ "$EUID" -eq 0 ] || die "Execute como root."
+}
 
-echo -e "${BLUE}=== SPFBL Whitelist Auto-Configuration ===${NC}"
-log "Iniciando detecção de ambiente..."
-
-# Verifica se o cliente SPFBL está instalado
-if [ ! -f "$SPFBL_CLIENT_BIN" ] && [ ! -f "/usr/bin/spfbl" ]; then
-    echo -e "${YELLOW}AVISO: O binário do cliente SPFBL não foi encontrado nos locais padrão.${NC}"
-    echo "Por favor, informe onde está o script 'spfbl.sh' ou o binário 'spfbl' (ex: /opt/spfbl/spfbl.sh):"
-    read -r CUSTOM_BIN
-    if [ -f "$CUSTOM_BIN" ]; then
-        SPFBL_CLIENT_BIN="$CUSTOM_BIN"
-    else
-        die "Binário não encontrado. Instale o cliente SPFBL antes de rodar este script."
+resolve_client_bin() {
+    if [ -x "/usr/bin/spfbl" ]; then
+        SPFBL_CLIENT_BIN="/usr/bin/spfbl"
+        return 0
     fi
-else
-    # Se achar em /usr/bin/spfbl prefere ele
-    if [ -f "/usr/bin/spfbl" ]; then SPFBL_CLIENT_BIN="/usr/bin/spfbl"; fi
-fi
 
-log "Usando cliente SPFBL em: $SPFBL_CLIENT_BIN"
+    if [ -x "$SPFBL_CLIENT_BIN" ]; then
+        return 0
+    fi
 
-# ==============================================================================
-# DETECÇÃO DE AMBIENTE
-# ==============================================================================
+    if [ "$SPFBL_AUTOWHITELIST_NONINTERACTIVE" = "1" ]; then
+        die "Cliente SPFBL não encontrado. Defina SPFBL_CLIENT_BIN e rode novamente."
+    fi
 
-IS_CPANEL=false
-IS_ZIMBRA=false
-IS_POSTFIX=false
+    echo -e "${YELLOW}AVISO:${NC} Cliente SPFBL não encontrado nos locais padrão."
+    echo "Informe o caminho do binário (ex.: /usr/bin/spfbl):"
+    read -r CUSTOM_BIN
+    [ -x "$CUSTOM_BIN" ] || die "Binário inválido: $CUSTOM_BIN"
+    SPFBL_CLIENT_BIN="$CUSTOM_BIN"
+}
 
-if [ -d "/usr/local/cpanel" ]; then
-    IS_CPANEL=true
-    log "Ambiente detectado: cPanel / EXIM"
-elif [ -d "/opt/zimbra" ]; then
-    IS_ZIMBRA=true
-    log "Ambiente detectado: Zimbra"
-elif [ -f "/etc/postfix/main.cf" ]; then
-    IS_POSTFIX=true
-    log "Ambiente detectado: Postfix (Genérico)"
-else
+detect_environment() {
+    if [ -d "/usr/local/cpanel" ]; then
+        ENVIRONMENT="cpanel"
+        log "Ambiente detectado: cPanel / Exim"
+        return
+    fi
+
+    if [ -d "/opt/zimbra" ]; then
+        ENVIRONMENT="zimbra"
+        log "Ambiente detectado: Zimbra"
+        return
+    fi
+
+    if [ -f "/etc/postfix/main.cf" ]; then
+        ENVIRONMENT="postfix"
+        log "Ambiente detectado: Postfix (Genérico)"
+        return
+    fi
+
     die "Não foi possível detectar cPanel, Zimbra ou Postfix padrão."
-fi
+}
 
-# ==============================================================================
-# CONFIGURAÇÃO: CPANEL / EXIM
-# ==============================================================================
-if [ "$IS_CPANEL" = true ]; then
-    
-    EXIM_SCRIPT="/var/spool/exim/spfbl.sh"
-    
-    log "Configurando script de transporte em $EXIM_SCRIPT..."
-    
-    # Cria o script que o Exim vai chamar
-    cat <<EOF > "$EXIM_SCRIPT"
-#!/bin/bash
-# Script de Whitelist Automática SPFBL para cPanel
-LOG="/var/spool/exim/log-transport.log"
-ARGS="\$1"
+check_spfbl_connectivity() {
+    if command -v nc >/dev/null 2>&1; then
+        if ! nc -z "$SPFBL_SERVER_IP" "$SPFBL_POLICY_PORT" >/dev/null 2>&1; then
+            log "Aviso: SPFBL em $SPFBL_SERVER_IP:$SPFBL_POLICY_PORT ainda não responde. Continuando configuração."
+        fi
+        return
+    fi
 
-# Debug opcional (descomente se precisar)
-# echo "\$(date) - Args: \$ARGS" >> "\$LOG"
+    if command -v ncat >/dev/null 2>&1; then
+        if ! ncat -z "$SPFBL_SERVER_IP" "$SPFBL_POLICY_PORT" >/dev/null 2>&1; then
+            log "Aviso: SPFBL em $SPFBL_SERVER_IP:$SPFBL_POLICY_PORT ainda não responde. Continuando configuração."
+        fi
+    fi
+}
 
-# Chama o cliente SPFBL
-# O >/dev/null garante que o Exim não trave esperando output
-$SPFBL_CLIENT_BIN white sender "\$ARGS" >/dev/null 2>&1
+configure_cpanel() {
+    local exim_script="/var/spool/exim/autoWH"
+
+    log "Configurando script de transporte em $exim_script..."
+    cat <<EOF > "$exim_script"
+#!/bin/sh
+# Debug:
+echo "Args recebidos: \$1 = \$1" >> /var/spool/exim/log-transport.log
+# Magica:
+#/var/spool/exim/spfbl.sh white sender \$1 >/dev/null 2>&1
+#echo "WHITE SENDER \$1" | nc $SPFBL_SERVER_HOSTNAME $SPFBL_POLICY_PORT
+$SPFBL_CLIENT_BIN white sender \$1
 EOF
 
-    chmod +x "$EXIM_SCRIPT"
-    chown cpaneleximfilter:cpaneleximfilter "$EXIM_SCRIPT" 2>/dev/null || chown mailnull:mail "$EXIM_SCRIPT"
-    
-    log "Script criado e permissões ajustadas."
-    
+    chmod +x "$exim_script"
+    chown cpaneleximfilter:cpaneleximfilter "$exim_script" 2>/dev/null || chown mailnull:mail "$exim_script"
+
     echo -e "\n${RED}!!! AÇÃO MANUAL NECESSÁRIA NO WHM !!!${NC}"
-    echo "O cPanel gerencia o exim.conf via templates. Adicionar isso via script pode quebrar atualizações."
     echo "Vá em: WHM > Service Configuration > Exim Configuration Manager > Advanced Editor"
-    echo ""
-    echo -e "${YELLOW}1. Procure a seção [PREROUTERS] e adicione:${NC}"
-    echo "--------------------------------------------------------"
+    echo -e "${YELLOW}SECTION: PREROUTERS${NC}"
     cat <<EOF
 whitelister:
-  driver = accept
-  domains = !+local_domains
+  driver    = accept
+  domains    = !+local_domains
   condition = \${if match_domain{\$sender_address_domain}{+local_domains}} 
   condition = \${if or {{ !eq{\$h_list-id:\$h_list-post:\$h_list-subscribe:}{} }{ match{\$h_precedence:}{(?i)bulk|list|junk|auto_reply} } { match{\$h_auto-submitted:}{(?i)auto-generated|auto-replied} } } {no}{yes}}
   transport = whlist
-  unseen
+unseen
 EOF
-    echo "--------------------------------------------------------"
-    
-    echo -e "\n${YELLOW}2. Procure a seção [TRANSPORTSTART] e adicione:${NC}"
-    echo "--------------------------------------------------------"
+    echo -e "${YELLOW}SECTION: TRANSPORTSTART${NC}"
     cat <<EOF
 whlist:
-  driver = pipe
-  command = $EXIM_SCRIPT \$local_part@\$domain 
+  driver  = pipe
+  command = $exim_script \$local_part@\$domain 
   return_fail_output = true
-  ignore_status = true
-  user = cpaneleximfilter
-  group = cpaneleximfilter
+  ignore_status = true 
+  #A opção "ignore_status" evita o envio de e-mails para todos os clientes do servidor quando o SPFBL está offline. Autor: Jefferson André Voigt
 EOF
-    echo "--------------------------------------------------------"
+    echo
+    echo "\"Lembre-se de substituir 'IP-DO-SEU-POOL-SPFBL' pelo seu pool de SPFBL. No caso do matrix defense, seria 'matrix.spfbl.net'.\""
+    echo "Neste servidor, o hostname SPFBL detectado foi: $SPFBL_SERVER_HOSTNAME"
     log "Instruções cPanel exibidas."
+}
 
-# ==============================================================================
-# CONFIGURAÇÃO: ZIMBRA / POSTFIX
-# ==============================================================================
-elif [ "$IS_ZIMBRA" = true ] || [ "$IS_POSTFIX" = true ]; then
-
-    SCRIPT_PATH="/usr/local/sbin/spfbl_whitelist_cron.sh"
-    MAILLOG="/var/log/maillog"
-    
-    # Tenta achar o log correto se não for o padrão
-    if [ ! -f "$MAILLOG" ]; then
-        if [ -f "/var/log/mail.log" ]; then MAILLOG="/var/log/mail.log"; fi
-        if [ -f "/var/log/zimbra.log" ]; then MAILLOG="/var/log/zimbra.log"; fi
+resolve_maillog() {
+    if [ -f "/var/log/maillog" ]; then
+        echo "/var/log/maillog"
+        return
     fi
+    if [ -f "/var/log/mail.log" ]; then
+        echo "/var/log/mail.log"
+        return
+    fi
+    if [ -f "/var/log/zimbra.log" ]; then
+        echo "/var/log/zimbra.log"
+        return
+    fi
+    die "Nenhum log de e-mail encontrado (/var/log/maillog, /var/log/mail.log, /var/log/zimbra.log)."
+}
 
-    log "Log de correio detectado: $MAILLOG"
-    log "Criando script de análise em $SCRIPT_PATH..."
+write_postfix_zimbra_script() {
+    local script_path="$1"
+    local maillog="$2"
 
-    # Script refinado (Melhor que o original: usa mktemp e caminhos absolutos)
-    cat <<EOF > "$SCRIPT_PATH"
+    cat <<EOF > "$script_path"
 #!/bin/bash
-# Autor: Kleber Rodrigues / Automatizado por Script
 SHELL=/bin/bash
 PATH=/bin:/sbin:/usr/bin:/usr/sbin
 
-# Define variáveis de data para o grep (Formato syslog: Feb 18 10)
 MES=\$(date +%b)
 DIA=\$(date +%_d)
 HORA=\$(date +%H)
-LOGFILE="$MAILLOG"
+LOGFILE="$maillog"
 TEMP_FILE=\$(mktemp)
+SPFBL_BIN="$SPFBL_CLIENT_BIN"
 
-# Filtra o log
-# 1. Pega a hora atual
-# 2. Pega status=sent (sucesso)
-# 3. Extrai o email de destino (to=<...>)
-# 4. Limpa formatação
 grep "\$MES \$DIA \$HORA" "\$LOGFILE" | \
-grep "status=sent" | \
-grep -o "to=<.*.>," | \
-cut -d '<' -f 2 | cut -d '>' -f 1 | \
+grep "status=sent (250 2.6.0" | \
+grep -oE "to=<[^>]+>," | \
+grep -oE "@[^>,]+" | \
 sort -u > "\$TEMP_FILE"
 
-# Processa cada email encontrado
-while read -r EMAIL; do
-    if [[ -n "\$EMAIL" ]]; then
-        # Chama o SPFBL para adicionar na whitelist
-        $SPFBL_CLIENT_BIN white sender "\$EMAIL" >/dev/null 2>&1
+if [ ! -s "\$TEMP_FILE" ]; then
+    grep "\$MES \$DIA \$HORA" "\$LOGFILE" | \
+    grep "status=sent" | \
+    grep -oE "to=<[^>]+>," | \
+    grep -oE "@[^>,]+" | \
+    sort -u > "\$TEMP_FILE"
+fi
+
+while read -r DOMAIN; do
+    if [ -n "\$DOMAIN" ]; then
+        "\$SPFBL_BIN" white sender "\$DOMAIN" >/dev/null 2>&1
     fi
 done < "\$TEMP_FILE"
 
-# Limpeza
 rm -f "\$TEMP_FILE"
 EOF
+}
 
-    chmod +x "$SCRIPT_PATH"
-    log "Script de análise criado."
+ensure_cron_job() {
+    local cron_job="$1"
+    local current_cron
 
-    # Configurando o Cronjob
-    CRON_CMD="$SCRIPT_PATH"
-    log "Configurando Crontab..."
-    
-    if crontab -l 2>/dev/null | grep -q "$SCRIPT_PATH"; then
+    current_cron="$(crontab -l 2>/dev/null || true)"
+    if printf '%s\n' "$current_cron" | grep -Fqx "$cron_job"; then
         log "Crontab já possui a entrada."
-    else
-        # Roda todo minuto 59 de cada hora
-        (crontab -l 2>/dev/null; echo "59 * * * * $SCRIPT_PATH") | crontab -
-        log "Agendamento adicionado ao Crontab (roda no minuto 59 de cada hora)."
+        return
     fi
 
-    echo -e "${GREEN}Configuração para Zimbra/Postfix concluída!${NC}"
-    echo "O script lerá o $MAILLOG a cada hora e adicionará os destinatários na whitelist."
-fi
+    (printf '%s\n' "$current_cron"; echo "$cron_job") | awk 'NF && !seen[$0]++' | crontab -
+    log "Agendamento adicionado ao Crontab ($WHITELIST_CRON_SCHEDULE)."
+}
 
-log "Fim da execução."
+configure_postfix_zimbra() {
+    local script_path="/usr/local/sbin/spfbl_whitelist_cron.sh"
+    local maillog
+    local cron_job
+
+    maillog="$(resolve_maillog)"
+    log "Log de correio detectado: $maillog"
+    log "Criando script de análise em $script_path..."
+
+    write_postfix_zimbra_script "$script_path" "$maillog"
+    chmod +x "$script_path"
+
+    cron_job="$WHITELIST_CRON_SCHEDULE $script_path"
+    ensure_cron_job "$cron_job"
+
+    echo -e "${GREEN}Configuração para Zimbra/Postfix concluída!${NC}"
+    echo "Agenda: '$WHITELIST_CRON_SCHEDULE' | SPFBL: $SPFBL_SERVER_HOSTNAME ($SPFBL_SERVER_IP)"
+}
+
+main() {
+    require_root
+    echo -e "${BLUE}=== SPFBL Whitelist Auto-Configuration ===${NC}"
+    log "Iniciando detecção de ambiente..."
+
+    resolve_client_bin
+    log "Usando cliente SPFBL em: $SPFBL_CLIENT_BIN"
+    log "Servidor SPFBL: $SPFBL_SERVER_HOSTNAME ($SPFBL_SERVER_IP) policy:$SPFBL_POLICY_PORT admin:$SPFBL_ADMIN_PORT"
+
+    check_spfbl_connectivity
+    detect_environment
+
+    case "$ENVIRONMENT" in
+        cpanel) configure_cpanel ;;
+        zimbra|postfix) configure_postfix_zimbra ;;
+        *) die "Ambiente não suportado: $ENVIRONMENT" ;;
+    esac
+
+    log "Fim da execução."
+}
+
+main "$@"

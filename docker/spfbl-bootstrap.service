@@ -1,0 +1,15 @@
+[Unit]
+Description=SPFBL Bootstrap Installer (first boot)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/spfbl/scripts/install_spfbl.sh
+ConditionPathExists=!/opt/spfbl/.installed_by_compose
+
+[Service]
+Type=oneshot
+TimeoutStartSec=0
+ExecStart=/bin/bash -lc 'cd /home/spfbl && chmod +x scripts/install_spfbl.sh scripts/spfbl_client_autowhitelist.sh && ./scripts/install_spfbl.sh && touch /opt/spfbl/.installed_by_compose'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
