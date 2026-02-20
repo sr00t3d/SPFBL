@@ -1015,6 +1015,7 @@ SPFBL_HOST="${REAL_HOSTNAME}"
 SPFBL_POLICY_PORT="${SPFBL_BACKEND_HTTP_PORT:-9877}"
 SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
 BASE_URL="${base_url}"
+CACHE_BUSTER="\$(date +%s)"
 CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
 
 echo -e "
@@ -1055,9 +1056,9 @@ elif command -v yum >/dev/null 2>&1; then
 fi
 
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL "\${BASE_URL}/public/spfbl-client" -o /usr/local/bin/spfbl
+  curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl-client?v=\${CACHE_BUSTER}" -o /usr/local/bin/spfbl
 else
-  wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client"
+  wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client?v=\${CACHE_BUSTER}"
 fi
 
 chmod +x /usr/local/bin/spfbl
@@ -1112,7 +1113,7 @@ EOF
     echo -e "${GREEN}Integração remota pronta.${NC}"
     echo "Cliente SPFBL: ${base_url}/public/spfbl-client"
     echo "One-liner DirectAdmin:"
-    echo "curl -sSL ${base_url}/public/install-directadmin.sh | sudo bash"
+    echo "curl -sSL '${base_url}/public/install-directadmin.sh?v=\$(date +%s)' | sudo bash"
 }
 
 setup_cpanel_integration_assets() {
@@ -1193,6 +1194,7 @@ SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
 SPFBL_POLICY_PORT="${SPFBL_BACKEND_HTTP_PORT:-9877}"
 SPFBL_DASHBOARD_EMAIL="${SPFBL_ADMIN_EMAIL:-postmaster@domain.com}"
 CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
+CACHE_BUSTER="\$(date +%s)"
 BACKUP_ROOT="/root/spfbl_backups_spfbl"
 LOG_FILE="/var/log/spfbl-cpanel-installer.log"
 CHILD_HOSTNAME="\$(hostname -f 2>/dev/null || hostname)"
@@ -1398,17 +1400,17 @@ run_install() {
   mkdir -p /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "\${BASE_URL}/public/spfbl-client" -o /usr/local/bin/spfbl
-    curl -fsSL "\${BASE_URL}/public/spfbl_end_recipient" -o /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
-    curl -fsSL "\${BASE_URL}/public/spfbl_begin_smtp_dkim" -o /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
-    curl -fsSL "\${BASE_URL}/public/spfbl_begin_check_message_pre" -o /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
-    curl -fsSL "\${BASE_URL}/public/firewall.cpanel.sh" -o /usr/local/bin/spfbl-firewall-update || true
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl-client?v=\${CACHE_BUSTER}" -o /usr/local/bin/spfbl
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_end_recipient?v=\${CACHE_BUSTER}" -o /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_begin_smtp_dkim?v=\${CACHE_BUSTER}" -o /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_begin_check_message_pre?v=\${CACHE_BUSTER}" -o /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/firewall.cpanel.sh?v=\${CACHE_BUSTER}" -o /usr/local/bin/spfbl-firewall-update || true
   else
-    wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client"
-    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient "\${BASE_URL}/public/spfbl_end_recipient"
-    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim "\${BASE_URL}/public/spfbl_begin_smtp_dkim"
-    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre "\${BASE_URL}/public/spfbl_begin_check_message_pre"
-    wget -qO /usr/local/bin/spfbl-firewall-update "\${BASE_URL}/public/firewall.cpanel.sh" || true
+    wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client?v=\${CACHE_BUSTER}"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient "\${BASE_URL}/public/spfbl_end_recipient?v=\${CACHE_BUSTER}"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim "\${BASE_URL}/public/spfbl_begin_smtp_dkim?v=\${CACHE_BUSTER}"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre "\${BASE_URL}/public/spfbl_begin_check_message_pre?v=\${CACHE_BUSTER}"
+    wget -qO /usr/local/bin/spfbl-firewall-update "\${BASE_URL}/public/firewall.cpanel.sh?v=\${CACHE_BUSTER}" || true
   fi
   chmod +x /usr/local/bin/spfbl
   chmod +x /usr/local/bin/spfbl-firewall-update 2>/dev/null || true
@@ -1526,7 +1528,7 @@ EOF
     chmod +x "$installer_path"
 
     echo "One-liner cPanel (child/client):"
-    echo "curl -sSL ${base_url}/public/install-child-cpanel.sh | sudo bash"
+    echo "curl -sSL '${base_url}/public/install-child-cpanel.sh?v=\$(date +%s)' | sudo bash"
 }
 
 run_autowhitelist_setup() {
