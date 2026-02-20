@@ -108,6 +108,7 @@ TIMEZONE="America/Sao_Paulo"
 : "${SPFBL_AUTOWHITELIST_REQUIRED:=no}"
 : "${DIRECTADMIN_INTEGRATION_ENABLE:=yes}"
 : "${CPANEL_INTEGRATION_ENABLE:=yes}"
+: "${CHILD_CPANEL_INSTALLER_VERSION:=1.1.0}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -138,6 +139,22 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
+
+banner() {
+echo -e "
+                                                           
+ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄    ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄   ▄▄▄                  
+█████▀▀▀ ███▀▀███▄ ███▀▀▀▀▀ ███▀▀███▄ ███             ██   
+ ▀████▄  ███▄▄███▀ ███▄▄    ███▄▄███▀ ███      ▄█▀█▄ ▀██▀▀ 
+   ▀████ ███▀▀▀▀   ███▀▀    ███  ███▄ ███      ██▄█▀  ██   
+███████▀ ███       ███      ████████▀ ████████ ▀█▄▄▄  ██   
+                                                           
+
+Versão: 1.0 (beta)      
+Node: Master - Versão SPFBL
+Hostname: $REAL_HOSTNAME                                                                                     
+"
+}
 
 # Função de log para registrar mensagens de status e erros no arquivo de log, permitindo que o usuário acompanhe o progresso da instalação e tenha um registro detalhado do processo para referência futura ou para depuração em caso de falhas.
 log_msg() {
@@ -1000,6 +1017,20 @@ SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
 BASE_URL="${base_url}"
 CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
 
+echo -e "
+                                                           
+ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄    ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄   ▄▄▄                  
+█████▀▀▀ ███▀▀███▄ ███▀▀▀▀▀ ███▀▀███▄ ███             ██   
+ ▀████▄  ███▄▄███▀ ███▄▄    ███▄▄███▀ ███      ▄█▀█▄ ▀██▀▀ 
+   ▀████ ███▀▀▀▀   ███▀▀    ███  ███▄ ███      ██▄█▀  ██   
+███████▀ ███       ███      ████████▀ ████████ ▀█▄▄▄  ██   
+                                                           
+
+Versão: 1.0 (beta)      
+Node: Child - Versão DirectAdmin
+Hostname: $REAL_HOSTNAME                                                                                     
+"
+
 log() { printf '[%s] %s\n' "\$(date +'%Y-%m-%d %H:%M:%S')" "\$*"; }
 
 detect_my_ip() {
@@ -1089,6 +1120,8 @@ setup_cpanel_integration_assets() {
     local web_port="${SPFBL_WEB_HTTP_PORT:-80}"
     local port_suffix=""
     local base_url public_dir cpanel_src firewall_src cpanel_dst firewall_dst installer_path
+    local child_installer_version="${CHILD_CPANEL_INSTALLER_VERSION:-1.1.0}"
+    local child_installer_generated_at
     local cpanel_acl_recipient cpanel_acl_dkim cpanel_acl_message
 
     [ "${CPANEL_INTEGRATION_ENABLE:-yes}" = "yes" ] || {
@@ -1106,6 +1139,7 @@ setup_cpanel_integration_assets() {
         port_suffix=":${web_port}"
     fi
     base_url="${web_scheme}://${REAL_HOSTNAME}${port_suffix}"
+    child_installer_generated_at="$(date +'%Y-%m-%d %H:%M:%S %z')"
     public_dir="$INSTALL_DIR/web/public"
     mkdir -p "$public_dir"
 
@@ -1156,9 +1190,32 @@ set -euo pipefail
 BASE_URL="${base_url}"
 SPFBL_ADMIN_HOST="${REAL_HOSTNAME}"
 SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
+SPFBL_POLICY_PORT="${SPFBL_BACKEND_HTTP_PORT:-9877}"
+SPFBL_DASHBOARD_EMAIL="${SPFBL_ADMIN_EMAIL:-postmaster@domain.com}"
 CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
 BACKUP_ROOT="/root/spfbl_backups_spfbl"
 LOG_FILE="/var/log/spfbl-cpanel-installer.log"
+CHILD_HOSTNAME="\$(hostname -f 2>/dev/null || hostname)"
+MASTER_IP=""
+INSTALLER_VERSION="${child_installer_version}"
+INSTALLER_GENERATED_AT="${child_installer_generated_at}"
+
+echo -e "
+                                                           
+ ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄    ▄▄▄▄▄▄▄ ▄▄▄▄▄▄▄   ▄▄▄                  
+█████▀▀▀ ███▀▀███▄ ███▀▀▀▀▀ ███▀▀███▄ ███             ██   
+ ▀████▄  ███▄▄███▀ ███▄▄    ███▄▄███▀ ███      ▄█▀█▄ ▀██▀▀ 
+   ▀████ ███▀▀▀▀   ███▀▀    ███  ███▄ ███      ██▄█▀  ██   
+███████▀ ███       ███      ████████▀ ████████ ▀█▄▄▄  ██   
+                                                           
+
+Versão: 1.0 (beta)      
+Node: Child - Versão cPanel
+Hostname: $REAL_HOSTNAME                                                                                     
+"
+
+echo "Instalador SPFBL (child) para cPanel - versão \${INSTALLER_VERSION}"
+echo "Build: \${INSTALLER_GENERATED_AT}"
 
 log() {
   local msg="[\$(date +'%Y-%m-%d %H:%M:%S')] \$*"
@@ -1177,6 +1234,18 @@ detect_my_ip() {
   echo "\$ip"
 }
 
+resolve_master_ip() {
+  if command -v getent >/dev/null 2>&1; then
+    MASTER_IP="\$(getent ahostsv4 "\$SPFBL_ADMIN_HOST" | awk '/STREAM/{print \$1; exit}')"
+  fi
+  if [ -z "\$MASTER_IP" ] && command -v dig >/dev/null 2>&1; then
+    MASTER_IP="\$(dig +short A "\$SPFBL_ADMIN_HOST" | head -n1)"
+  fi
+  if [ -z "\$MASTER_IP" ] && command -v host >/dev/null 2>&1; then
+    MASTER_IP="\$(host "\$SPFBL_ADMIN_HOST" 2>/dev/null | awk '/has address/{print \$NF; exit}')"
+  fi
+}
+
 [[ \$EUID -eq 0 ]] || { echo "Execute como root"; exit 1; }
 [[ -x /usr/local/cpanel/cpanel ]] || { echo "cPanel não detectado"; exit 1; }
 
@@ -1185,6 +1254,8 @@ backup_if_exists() {
   if [ -e "\$f" ]; then
     mkdir -p "\$(dirname "\$BACKUP_SET_DIR\$f")"
     cp -a "\$f" "\$BACKUP_SET_DIR\$f"
+  else
+    echo "\$f" >> "\$BACKUP_SET_DIR/.absent_files"
   fi
 }
 
@@ -1194,9 +1265,116 @@ restore_if_exists() {
     mkdir -p "\$(dirname "\$f")"
     cp -a "\$LAST_BACKUP_SET\$f" "\$f"
     log "Restaurado: \$f"
+  elif [ -f "\$LAST_BACKUP_SET/.absent_files" ] && grep -Fxq "\$f" "\$LAST_BACKUP_SET/.absent_files"; then
+    rm -f "\$f"
+    log "Removido (não existia antes): \$f"
   else
     log "Sem backup para: \$f"
   fi
+}
+
+run_post_install_tests() {
+  local check_output query_output ticket_url
+
+  log "Iniciando testes pós-instalação com SPFBL master..."
+
+  if ! command -v nc >/dev/null 2>&1; then
+    log "Teste 1/2 e 2/2 ignorados: comando 'nc' não encontrado."
+    return 0
+  fi
+
+  if ! command -v /usr/local/bin/spfbl >/dev/null 2>&1; then
+    log "Teste 2/2 ignorado: /usr/local/bin/spfbl não encontrado."
+    return 0
+  fi
+
+  log "Teste 1/2: CHECK (esperado: SOFTFAIL sem ticket URL)"
+  check_output="\$(echo "CHECK 8.8.8.8 teste@gmail.com gmail.com \${SPFBL_DASHBOARD_EMAIL}" | nc -w 8 "\${SPFBL_ADMIN_HOST}" "\${SPFBL_POLICY_PORT}" 2>/dev/null || true)"
+  if echo "\$check_output" | grep -qi "SOFTFAIL"; then
+    if echo "\$check_output" | grep -Eqi "https?://"; then
+      log "Resultado 1/2: recebeu SOFTFAIL com URL (aceitável)."
+    else
+      log "Resultado 1/2: SOFTFAIL sem ticket URL (OK)."
+    fi
+  else
+    log "Resultado 1/2: não retornou SOFTFAIL. Saída:"
+    echo "\$check_output"
+  fi
+
+  log "Teste 2/2: QUERY (esperado: SOFTFAIL com ticket URL)"
+  query_output="\$(/usr/local/bin/spfbl query 8.8.8.8 teste@gmail.com gmail.com "\${SPFBL_DASHBOARD_EMAIL}" 2>&1 || true)"
+  ticket_url="\$(echo "\$query_output" | grep -Eo 'https?://[^ ]+' | head -n1 || true)"
+  if echo "\$query_output" | grep -qi "SOFTFAIL" && [ -n "\$ticket_url" ]; then
+    log "Resultado 2/2: SOFTFAIL com ticket (OK)."
+    log "Ticket gerado: \$ticket_url"
+  else
+    log "Resultado 2/2: não confirmou ticket. Saída:"
+    echo "\$query_output"
+  fi
+}
+
+run_debug_menu() {
+  local option check_output query_output ticket_url rcpt
+
+  touch "\$LOG_FILE"
+  resolve_master_ip
+
+  while true; do
+    echo
+    echo "=== SPFBL Debug Menu ==="
+    echo "Master: \${SPFBL_ADMIN_HOST} (\${MASTER_IP:-IP não resolvido})"
+    echo "Child:  \${CHILD_HOSTNAME}"
+    echo "1) Executar teste de rota para servidor master"
+    echo "2) Verificar conectividade (local e remota)"
+    echo "3) Simular SOFTFAIL com hostname do servidor filho"
+    echo "4) Simular ticket no master (query com URL)"
+    echo "5) Simular SPAM no master (envio SMTP local + query)"
+    echo "0) Sair"
+    read -r -p "Escolha uma opção: " option
+
+    case "\$option" in
+      1)
+        log "DEBUG 1: rota para master"
+        ip route get "\${MASTER_IP:-8.8.8.8}" 2>/dev/null || true
+        ;;
+      2)
+        log "DEBUG 2: conectividade"
+        nc -vz "\$SPFBL_ADMIN_HOST" "\$SPFBL_POLICY_PORT" 2>/dev/null || true
+        nc -vz "\$SPFBL_ADMIN_HOST" "\$SPFBL_ADMIN_PORT" 2>/dev/null || true
+        nc -vz 127.0.0.1 25 2>/dev/null || true
+        ;;
+      3)
+        log "DEBUG 3: simulação SOFTFAIL (CHECK)"
+        check_output="\$(echo "CHECK 8.8.8.8 teste@gmail.com \${CHILD_HOSTNAME} \${SPFBL_DASHBOARD_EMAIL}" | nc -w 8 "\$SPFBL_ADMIN_HOST" "\$SPFBL_POLICY_PORT" 2>/dev/null || true)"
+        echo "\$check_output"
+        ;;
+      4)
+        log "DEBUG 4: simulação ticket (QUERY)"
+        query_output="\$(/usr/local/bin/spfbl query 8.8.8.8 teste@gmail.com \${CHILD_HOSTNAME} "\${SPFBL_DASHBOARD_EMAIL}" 2>&1 || true)"
+        ticket_url="\$(echo "\$query_output" | grep -Eo 'https?://[^ ]+' | head -n1 || true)"
+        echo "\$query_output"
+        [ -n "\$ticket_url" ] && echo "Ticket: \$ticket_url"
+        ;;
+      5)
+        log "DEBUG 5: simulação SPAM"
+        rcpt="\${SPFBL_DASHBOARD_EMAIL}"
+        if command -v swaks >/dev/null 2>&1; then
+          swaks --server 127.0.0.1 --port 25 --helo "\$CHILD_HOSTNAME" \
+            --from spammer@bad-domain.test --to "\$rcpt" \
+            --header "Subject: VIAGRA CASINO FREE CRYPTO" \
+            --body "buy now bonus winner free" || true
+        else
+          echo "swaks não encontrado, pulando envio SMTP local."
+        fi
+        query_output="\$(/usr/local/bin/spfbl query 185.220.101.1 spammer@bad-domain.test "\${CHILD_HOSTNAME}" "\$rcpt" 2>&1 || true)"
+        echo "\$query_output"
+        ticket_url="\$(echo "\$query_output" | grep -Eo 'https?://[^ ]+' | head -n1 || true)"
+        [ -n "\$ticket_url" ] && echo "Ticket: \$ticket_url"
+        ;;
+      0) break ;;
+      *) echo "Opção inválida." ;;
+    esac
+  done
 }
 
 run_install() {
@@ -1210,6 +1388,7 @@ run_install() {
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  backup_if_exists /usr/local/bin/spfbl
   backup_if_exists /usr/local/bin/spfbl.cpanel.sh
   backup_if_exists /usr/local/bin/spfbl-firewall-update
   log "Backup salvo em: \$BACKUP_SET_DIR"
@@ -1290,6 +1469,7 @@ run_install() {
     fi
   fi
 
+  run_post_install_tests
   log "Integração cPanel concluída."
 }
 
@@ -1312,19 +1492,33 @@ run_restore() {
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  restore_if_exists /usr/local/bin/spfbl
   restore_if_exists /usr/local/bin/spfbl.cpanel.sh
   restore_if_exists /usr/local/bin/spfbl-firewall-update
 
+  # Fallback agressivo: se não houver backup suficiente, limpa traços SPFBL e
+  # retorna para o padrão do MTA local.
+  sed -i '/^spfbl_end_recipient=/d;/^spfbl_begin_smtp_dkim=/d;/^spfbl_begin_check_message_pre=/d' /etc/exim.conf.localopts 2>/dev/null || true
+  sed -i '/^spamd_address = /d' /etc/exim.conf.local 2>/dev/null || true
+  rm -f /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
+  rm -f /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
+  rm -f /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+
   /usr/local/cpanel/scripts/buildeximconf >/dev/null 2>&1 || true
   /usr/local/cpanel/scripts/restartsrv_exim >/dev/null 2>&1 || true
-  log "Restauração concluída."
+  log "Restauração concluída (modo padrão MTA sem SPFBL)."
 }
 
 case "\${1:---install}" in
   --install) run_install ;;
   --restore) run_restore ;;
+  --debug) run_debug_menu ;;
+  --version)
+    echo "install-child-cpanel.sh versão \${INSTALLER_VERSION}"
+    echo "build \${INSTALLER_GENERATED_AT}"
+    ;;
   *)
-    echo "Uso: \$0 [--install|--restore]"
+    echo "Uso: \$0 [--install|--restore|--debug|--version]"
     exit 1
     ;;
 esac
@@ -1389,6 +1583,7 @@ main() {
 
     echo -e "Diretório de Instalação: ${YELLOW}$INSTALL_DIR${NC}"
 
+    banner
     install_dependencies
     configure_exim4
     ensure_java
