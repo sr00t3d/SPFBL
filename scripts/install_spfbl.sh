@@ -65,6 +65,19 @@ SPFBL_CLIENT_CIDR="127.0.0.1/32"
 # Hostname ou Label para liberação, que pode ser usado para identificar o cliente ou a rede que está sendo liberada no SPFBL.
 SPFBL_CLIENT_LABEL=""
 
+# Lista de servidores autorizados no formato completo:
+# "CIDR:identificador:contato@email"
+AUTHORIZED_SERVERS=()
+
+# Lista simplificada (somente IP ou CIDR). Ex: "203.0.113.10" ou "203.0.113.0/24"
+AUTHORIZED_SERVERS_SIMPLE=()
+
+# Compatibilidade com scripts antigos (mesmo formato de AUTHORIZED_SERVERS)
+POLICY_CLIENTS=()
+
+# E-mail opcional para registro automático no instalador DirectAdmin remoto.
+DIRECTADMIN_CLIENT_EMAIL=""
+
 # Confirma se sera utilizado TLS para o painel de administração do SPFBL, o que é recomendado para garantir a segurança das conexões ao painel. Se configurado como "yes", o script irá configurar o SPFBL para usar TLS/SSL para o painel de administração, e os usuários deverão acessar o painel através do endereço https://hostname:SPFBL_FRONT_HTTPS_PORT/. Certifique-se de que os certificados TLS/SSL estejam configurados corretamente no servidor para garantir que as conexões seguras funcionem sem problemas.
 SPFBL_HTTP_USE_TLS="no"
 
@@ -93,6 +106,8 @@ TIMEZONE="America/Sao_Paulo"
 : "${SPFBL_STARTUP_TIMEOUT:=300}"
 : "${SPFBL_AUTOWHITELIST_ENABLE:=yes}"
 : "${SPFBL_AUTOWHITELIST_REQUIRED:=no}"
+: "${DIRECTADMIN_INTEGRATION_ENABLE:=yes}"
+: "${CPANEL_INTEGRATION_ENABLE:=yes}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_SRC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -831,18 +846,11 @@ EOF
 
 configure_spfbl_admin_account() {
     local admin_port="${SPFBL_FRONT_HTTP_PORT:-9875}"
-    local web_port="${SPFBL_WEB_HTTP_PORT:-80}"
-    local web_scheme="http"
 
     [ -n "${SPFBL_ADMIN_EMAIL:-}" ] || {
         echo -e "${YELLOW}Aviso:${NC} SPFBL_ADMIN_EMAIL vazio. Pulando criação de conta admin."
         return 0
     }
-
-    if [ "${SPFBL_HTTP_USE_TLS:-no}" = "yes" ]; then
-        web_scheme="https"
-        web_port="${SPFBL_WEB_HTTPS_PORT:-443}"
-    fi
 
     if [ -z "${SPFBL_ADMIN_PASSWORD:-}" ]; then
         if command -v openssl >/dev/null 2>&1; then
@@ -860,18 +868,471 @@ configure_spfbl_admin_account() {
     if command -v nc >/dev/null 2>&1; then
         printf 'USER SET %s PASSWORD %s\n' "$SPFBL_ADMIN_EMAIL" "$SPFBL_ADMIN_PASSWORD" | nc 127.0.0.1 "$admin_port" >/dev/null 2>&1 || {
             echo -e "${YELLOW}Aviso:${NC} Não foi possível definir senha admin via porta ${admin_port}."
-            return 0
         }
     else
         echo -e "${YELLOW}Aviso:${NC} 'nc' não encontrado. Pulei definição de senha admin."
+    fi
+}
+
+print_admin_dashboard_info() {
+    local web_port="${SPFBL_WEB_HTTP_PORT:-80}"
+    local web_scheme="http"
+    local admin_url
+    local admin_url_direct
+
+    [ -n "${SPFBL_ADMIN_EMAIL:-}" ] || return 0
+
+    if [ "${SPFBL_HTTP_USE_TLS:-no}" = "yes" ]; then
+        web_scheme="https"
+        web_port="${SPFBL_WEB_HTTPS_PORT:-443}"
+    fi
+
+    admin_url="${web_scheme}://${REAL_HOSTNAME}/${SPFBL_ADMIN_EMAIL}"
+    admin_url_direct="${web_scheme}://${REAL_HOSTNAME}:${web_port}/${SPFBL_ADMIN_EMAIL}"
+
+    echo
+    echo "Email de admin: ${SPFBL_ADMIN_EMAIL}"
+    echo "Senha do admin: ${SPFBL_ADMIN_PASSWORD}"
+    echo "URL admin: ${admin_url}"
+    if [ "$admin_url_direct" != "$admin_url" ]; then
+        echo "URL admin direta: ${admin_url_direct}"
+    fi
+}
+
+configure_authorized_clients() {
+    local registered=0
+    local cidr ident contact ip
+
+    if ! command -v spfbl >/dev/null 2>&1; then
+        echo -e "${YELLOW}Aviso:${NC} Comando 'spfbl' indisponível. Pulando cadastro de clientes autorizados."
         return 0
     fi
 
+    if [ -n "${SPFBL_CLIENT_CIDR:-}" ]; then
+        ident="${SPFBL_CLIENT_LABEL:-$REAL_HOSTNAME}"
+        spfbl client add "$SPFBL_CLIENT_CIDR" "$ident" SPFBL "${SPFBL_ADMIN_EMAIL:-}" >/dev/null 2>&1 || true
+        registered=$((registered + 1))
+    fi
+
+    for entry in "${AUTHORIZED_SERVERS[@]:-}"; do
+        [ -n "${entry:-}" ] || continue
+        IFS=':' read -r cidr ident contact <<< "$entry"
+        [ -n "${cidr:-}" ] || continue
+        ident="${ident:-external-client}"
+        contact="${contact:-${SPFBL_ADMIN_EMAIL:-}}"
+        spfbl client add "$cidr" "$ident" SPFBL "$contact" >/dev/null 2>&1 || true
+        registered=$((registered + 1))
+    done
+
+    for ip in "${AUTHORIZED_SERVERS_SIMPLE[@]:-}"; do
+        [ -n "${ip:-}" ] || continue
+        if [[ "$ip" != */* ]]; then
+            cidr="${ip}/32"
+        else
+            cidr="$ip"
+        fi
+        ident="mail-${cidr//\//_}"
+        ident="${ident//./_}"
+        spfbl client add "$cidr" "$ident" SPFBL "${SPFBL_ADMIN_EMAIL:-}" >/dev/null 2>&1 || true
+        registered=$((registered + 1))
+    done
+
+    for entry in "${POLICY_CLIENTS[@]:-}"; do
+        [ -n "${entry:-}" ] || continue
+        IFS=':' read -r cidr ident contact <<< "$entry"
+        [ -n "${cidr:-}" ] || continue
+        ident="${ident:-external-client}"
+        contact="${contact:-${SPFBL_ADMIN_EMAIL:-}}"
+        spfbl client add "$cidr" "$ident" SPFBL "$contact" >/dev/null 2>&1 || true
+        registered=$((registered + 1))
+    done
+
+    if [ "$registered" -gt 0 ]; then
+        echo -e "${GREEN}Clientes autorizados processados:${NC} ${registered}"
+    fi
+}
+
+setup_directadmin_integration_assets() {
+    local web_scheme="http"
+    local web_port="${SPFBL_WEB_HTTP_PORT:-80}"
+    local port_suffix=""
+    local base_url public_dir client_src public_client installer_path
+
+    [ "${DIRECTADMIN_INTEGRATION_ENABLE:-yes}" = "yes" ] || {
+        echo -e "${YELLOW}[CONFIG]${NC} Integração DirectAdmin desativada (DIRECTADMIN_INTEGRATION_ENABLE=${DIRECTADMIN_INTEGRATION_ENABLE})."
+        return 0
+    }
+
+    if [ "${SPFBL_HTTP_USE_TLS:-no}" = "yes" ]; then
+        web_scheme="https"
+        web_port="${SPFBL_WEB_HTTPS_PORT:-443}"
+    fi
+
+    if ! { [ "$web_scheme" = "http" ] && [ "$web_port" = "80" ]; } && \
+       ! { [ "$web_scheme" = "https" ] && [ "$web_port" = "443" ]; }; then
+        port_suffix=":${web_port}"
+    fi
+    base_url="${web_scheme}://${REAL_HOSTNAME}${port_suffix}"
+
+    public_dir="$INSTALL_DIR/web/public"
+    mkdir -p "$public_dir"
+
+    client_src="$REPO_SRC_DIR/client/spfbl.sh"
+    if [ ! -f "$client_src" ]; then
+        client_src="$SPFBL_BIN/spfbl.sh"
+    fi
+
+    public_client="$public_dir/spfbl-client"
+    cp -f "$client_src" "$public_client"
+    chmod +x "$public_client"
+    sed -i "s|^IP_SERVIDOR=.*|IP_SERVIDOR=\"$REAL_HOSTNAME\"|" "$public_client" || true
+    sed -i "s|^PORTA_SERVIDOR=.*|PORTA_SERVIDOR=\"${SPFBL_BACKEND_HTTP_PORT:-9877}\"|" "$public_client" || true
+    sed -i "s|^PORTA_ADMIN=.*|PORTA_ADMIN=\"${SPFBL_FRONT_HTTP_PORT:-9875}\"|" "$public_client" || true
+
+    installer_path="$public_dir/install-directadmin.sh"
+    cat > "$installer_path" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+SPFBL_HOST="${REAL_HOSTNAME}"
+SPFBL_POLICY_PORT="${SPFBL_BACKEND_HTTP_PORT:-9877}"
+SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
+BASE_URL="${base_url}"
+CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
+
+log() { printf '[%s] %s\n' "\$(date +'%Y-%m-%d %H:%M:%S')" "\$*"; }
+
+detect_my_ip() {
+  local ip=""
+  if command -v curl >/dev/null 2>&1; then
+    ip="\$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  fi
+  if [ -z "\$ip" ]; then
+    ip="\$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++){if(\$i==\"src\"){print \$(i+1); exit}}}')"
+  fi
+  echo "\$ip"
+}
+
+[[ \$EUID -eq 0 ]] || { echo "Execute como root"; exit 1; }
+[[ -f /usr/local/directadmin/directadmin ]] || { echo "DirectAdmin não detectado"; exit 1; }
+
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -qq
+  apt-get install -y curl wget netcat-openbsd >/dev/null 2>&1 || true
+elif command -v yum >/dev/null 2>&1; then
+  yum install -y curl wget nmap-ncat >/dev/null 2>&1 || true
+fi
+
+if command -v curl >/dev/null 2>&1; then
+  curl -fsSL "\${BASE_URL}/public/spfbl-client" -o /usr/local/bin/spfbl
+else
+  wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client"
+fi
+
+chmod +x /usr/local/bin/spfbl
+sed -i "s|^IP_SERVIDOR=.*|IP_SERVIDOR=\"\${SPFBL_HOST}\"|" /usr/local/bin/spfbl
+sed -i "s|^PORTA_SERVIDOR=.*|PORTA_SERVIDOR=\"\${SPFBL_POLICY_PORT}\"|" /usr/local/bin/spfbl
+sed -i "s|^PORTA_ADMIN=.*|PORTA_ADMIN=\"\${SPFBL_ADMIN_PORT}\"|" /usr/local/bin/spfbl
+
+MY_IP="\$(detect_my_ip)"
+MY_HOST="\$(hostname -f 2>/dev/null || hostname)"
+MY_EMAIL="\${CLIENT_REGISTER_EMAIL:-auto@\${MY_HOST}}"
+
+if command -v nc >/dev/null 2>&1; then
+  RESP="\$(printf 'CLIENT ADD %s/32 %s SPFBL %s\n' "\$MY_IP" "\$MY_HOST" "\$MY_EMAIL" | nc -w 2 "\$SPFBL_HOST" "\$SPFBL_ADMIN_PORT" 2>/dev/null || true)"
+  if echo "\$RESP" | grep -Eq 'ADDED|ALREADY'; then
+    log "Cliente registrado no SPFBL: \$MY_IP (\$MY_HOST)"
+  else
+    log "Auto-registro não confirmou. Rode manualmente no servidor SPFBL:"
+    log "spfbl client add \$MY_IP/32 \$MY_HOST SPFBL \$MY_EMAIL"
+  fi
+fi
+
+if [ -f /etc/exim.acl_check_recipient.pre.conf ]; then
+  cp -a /etc/exim.acl_check_recipient.pre.conf "/etc/exim.acl_check_recipient.pre.conf.bak.\$(date +%Y%m%d%H%M%S)"
+fi
+
+cat > /etc/exim.acl_check_recipient.pre.conf <<'EOFRCP'
+warn
+  set acl_m_spfbl = \${run{/usr/local/bin/spfbl query \\
+    \$sender_host_address \\
+    \$sender_address \\
+    \$sender_helo_name \\
+    \$local_part@\$domain}{\$value}{TIMEOUT}}
+
+warn
+  log_message = SPFBL-CHECK: \$acl_m_spfbl
+
+deny
+  condition = \${if match{\$acl_m_spfbl}{^(BLOCKED|BANNED)}{yes}{no}}
+  message = Message rejected by SPFBL security policy
+
+accept
+  condition = \${if match{\$acl_m_spfbl}{^WHITE}{yes}{no}}
+EOFRCP
+
+log "Integração aplicada. No DirectAdmin, execute:"
+log "cd /usr/local/directadmin/custombuild && ./build rewrite_confs && ./build exim_conf"
+log "systemctl restart exim"
+EOF
+    chmod +x "$installer_path"
+
     echo
-    echo -e "${GREEN}Conta admin SPFBL configurada.${NC}"
-    echo "URL de acesso: ${web_scheme}://${REAL_HOSTNAME}:${web_port}/${SPFBL_ADMIN_EMAIL}"
-    echo "Login: $SPFBL_ADMIN_EMAIL"
-    echo "Senha: $SPFBL_ADMIN_PASSWORD"
+    echo -e "${GREEN}Integração remota pronta.${NC}"
+    echo "Cliente SPFBL: ${base_url}/public/spfbl-client"
+    echo "One-liner DirectAdmin:"
+    echo "curl -sSL ${base_url}/public/install-directadmin.sh | sudo bash"
+}
+
+setup_cpanel_integration_assets() {
+    local web_scheme="http"
+    local web_port="${SPFBL_WEB_HTTP_PORT:-80}"
+    local port_suffix=""
+    local base_url public_dir cpanel_src firewall_src cpanel_dst firewall_dst installer_path
+    local cpanel_acl_recipient cpanel_acl_dkim cpanel_acl_message
+
+    [ "${CPANEL_INTEGRATION_ENABLE:-yes}" = "yes" ] || {
+        echo -e "${YELLOW}[CONFIG]${NC} Integração cPanel desativada (CPANEL_INTEGRATION_ENABLE=${CPANEL_INTEGRATION_ENABLE})."
+        return 0
+    }
+
+    if [ "${SPFBL_HTTP_USE_TLS:-no}" = "yes" ]; then
+        web_scheme="https"
+        web_port="${SPFBL_WEB_HTTPS_PORT:-443}"
+    fi
+
+    if ! { [ "$web_scheme" = "http" ] && [ "$web_port" = "80" ]; } && \
+       ! { [ "$web_scheme" = "https" ] && [ "$web_port" = "443" ]; }; then
+        port_suffix=":${web_port}"
+    fi
+    base_url="${web_scheme}://${REAL_HOSTNAME}${port_suffix}"
+    public_dir="$INSTALL_DIR/web/public"
+    mkdir -p "$public_dir"
+
+    cpanel_src="$REPO_SRC_DIR/client/spfbl.cpanel.sh"
+    firewall_src="$REPO_SRC_DIR/client/firewall.cpanel.sh"
+    cpanel_acl_recipient="$REPO_SRC_DIR/client/spfbl_end_recipient"
+    cpanel_acl_dkim="$REPO_SRC_DIR/client/spfbl_begin_smtp_dkim"
+    cpanel_acl_message="$REPO_SRC_DIR/client/spfbl_begin_check_message_pre"
+    cpanel_dst="$public_dir/spfbl.cpanel.sh"
+    firewall_dst="$public_dir/firewall.cpanel.sh"
+
+    if [ ! -f "$cpanel_src" ]; then
+        echo -e "${YELLOW}Aviso:${NC} Script base cPanel não encontrado em $cpanel_src. Pulando assets cPanel."
+        return 0
+    fi
+
+    cp -f "$cpanel_src" "$cpanel_dst"
+    chmod +x "$cpanel_dst"
+    sed -i "s|54\\.233\\.253\\.229|${REAL_HOSTNAME}|g" "$cpanel_dst" || true
+    sed -i "s|9877|${SPFBL_BACKEND_HTTP_PORT:-9877}|g" "$cpanel_dst" || true
+
+    if [ -f "$firewall_src" ]; then
+        cp -f "$firewall_src" "$firewall_dst"
+        chmod +x "$firewall_dst"
+        sed -i "s|54\\.233\\.253\\.229|${REAL_HOSTNAME}|g" "$firewall_dst" || true
+        sed -i "s|9877|${SPFBL_BACKEND_HTTP_PORT:-9877}|g" "$firewall_dst" || true
+    fi
+
+    # Publica arquivos ACL para instalação cPanel sem dependência da matrix.
+    [ -f "$cpanel_acl_recipient" ] && cp -f "$cpanel_acl_recipient" "$public_dir/spfbl_end_recipient"
+    [ -f "$cpanel_acl_dkim" ] && cp -f "$cpanel_acl_dkim" "$public_dir/spfbl_begin_smtp_dkim"
+    [ -f "$cpanel_acl_message" ] && cp -f "$cpanel_acl_message" "$public_dir/spfbl_begin_check_message_pre"
+
+    # Garante publicação do cliente SPFBL para cPanel também.
+    if [ ! -f "$public_dir/spfbl-client" ]; then
+        cp -f "$REPO_SRC_DIR/client/spfbl.sh" "$public_dir/spfbl-client"
+        chmod +x "$public_dir/spfbl-client"
+    fi
+    sed -i "s|^IP_SERVIDOR=.*|IP_SERVIDOR=\"$REAL_HOSTNAME\"|" "$public_dir/spfbl-client" || true
+    sed -i "s|^PORTA_SERVIDOR=.*|PORTA_SERVIDOR=\"${SPFBL_BACKEND_HTTP_PORT:-9877}\"|" "$public_dir/spfbl-client" || true
+    sed -i "s|^PORTA_ADMIN=.*|PORTA_ADMIN=\"${SPFBL_FRONT_HTTP_PORT:-9875}\"|" "$public_dir/spfbl-client" || true
+
+    installer_path="$public_dir/install-child-cpanel.sh"
+    cat > "$installer_path" <<EOF
+#!/bin/bash
+set -euo pipefail
+
+BASE_URL="${base_url}"
+SPFBL_ADMIN_HOST="${REAL_HOSTNAME}"
+SPFBL_ADMIN_PORT="${SPFBL_FRONT_HTTP_PORT:-9875}"
+CLIENT_REGISTER_EMAIL="${DIRECTADMIN_CLIENT_EMAIL:-}"
+BACKUP_ROOT="/root/spfbl_backups_spfbl"
+LOG_FILE="/var/log/spfbl-cpanel-installer.log"
+
+log() {
+  local msg="[\$(date +'%Y-%m-%d %H:%M:%S')] \$*"
+  echo "\$msg"
+  echo "\$msg" >> "\$LOG_FILE"
+}
+
+detect_my_ip() {
+  local ip=""
+  if command -v curl >/dev/null 2>&1; then
+    ip="\$(curl -4 -s --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+  fi
+  if [ -z "\$ip" ]; then
+    ip="\$(ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++){if(\$i==\"src\"){print \$(i+1); exit}}}')"
+  fi
+  echo "\$ip"
+}
+
+[[ \$EUID -eq 0 ]] || { echo "Execute como root"; exit 1; }
+[[ -x /usr/local/cpanel/cpanel ]] || { echo "cPanel não detectado"; exit 1; }
+
+backup_if_exists() {
+  local f="\$1"
+  if [ -e "\$f" ]; then
+    mkdir -p "\$(dirname "\$BACKUP_SET_DIR\$f")"
+    cp -a "\$f" "\$BACKUP_SET_DIR\$f"
+  fi
+}
+
+restore_if_exists() {
+  local f="\$1"
+  if [ -e "\$LAST_BACKUP_SET\$f" ]; then
+    mkdir -p "\$(dirname "\$f")"
+    cp -a "\$LAST_BACKUP_SET\$f" "\$f"
+    log "Restaurado: \$f"
+  else
+    log "Sem backup para: \$f"
+  fi
+}
+
+run_install() {
+  BACKUP_TS="\$(date +%Y%m%d_%H%M%S)"
+  BACKUP_SET_DIR="\$BACKUP_ROOT/\$BACKUP_TS"
+  mkdir -p "\$BACKUP_SET_DIR"
+  touch "\$LOG_FILE"
+
+  backup_if_exists /etc/exim.conf.local
+  backup_if_exists /etc/exim.conf.localopts
+  backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
+  backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
+  backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  backup_if_exists /usr/local/bin/spfbl.cpanel.sh
+  backup_if_exists /usr/local/bin/spfbl-firewall-update
+  log "Backup salvo em: \$BACKUP_SET_DIR"
+
+  mkdir -p /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK
+  mkdir -p /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK
+  mkdir -p /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "\${BASE_URL}/public/spfbl-client" -o /usr/local/bin/spfbl
+    curl -fsSL "\${BASE_URL}/public/spfbl_end_recipient" -o /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
+    curl -fsSL "\${BASE_URL}/public/spfbl_begin_smtp_dkim" -o /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
+    curl -fsSL "\${BASE_URL}/public/spfbl_begin_check_message_pre" -o /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+    curl -fsSL "\${BASE_URL}/public/firewall.cpanel.sh" -o /usr/local/bin/spfbl-firewall-update || true
+  else
+    wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient "\${BASE_URL}/public/spfbl_end_recipient"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim "\${BASE_URL}/public/spfbl_begin_smtp_dkim"
+    wget -qO /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre "\${BASE_URL}/public/spfbl_begin_check_message_pre"
+    wget -qO /usr/local/bin/spfbl-firewall-update "\${BASE_URL}/public/firewall.cpanel.sh" || true
+  fi
+  chmod +x /usr/local/bin/spfbl
+  chmod +x /usr/local/bin/spfbl-firewall-update 2>/dev/null || true
+
+  if ! grep -q '^spamd_address = ' /etc/exim.conf.local 2>/dev/null; then
+    echo "spamd_address = ${REAL_HOSTNAME} ${SPFBL_BACKEND_HTTP_PORT:-9877} retry=30s tmo=3m" >> /etc/exim.conf.local
+  else
+    sed -i "s|^spamd_address = .*|spamd_address = ${REAL_HOSTNAME} ${SPFBL_BACKEND_HTTP_PORT:-9877} retry=30s tmo=3m|" /etc/exim.conf.local
+  fi
+
+  if ! grep -q '^timeout_frozen_after = ' /etc/exim.conf.local 2>/dev/null; then
+    echo "timeout_frozen_after = 7d" >> /etc/exim.conf.local
+  fi
+
+  if ! grep -q '^smtp_accept_max = ' /etc/exim.conf.local 2>/dev/null; then
+    echo "smtp_accept_max = 250" >> /etc/exim.conf.local
+  fi
+
+  exim_opt_set() {
+    local option_name="\$1"
+    local option_value="\$2"
+    touch /etc/exim.conf.localopts
+    if grep -q "^\\\${option_name}=" /etc/exim.conf.localopts; then
+      sed -i "s/^\\\${option_name}=.*/\\\${option_name}=\\\${option_value}/" /etc/exim.conf.localopts
+    else
+      echo "\\\${option_name}=\\\${option_value}" >> /etc/exim.conf.localopts
+    fi
+  }
+
+  exim_opt_set "spfbl_end_recipient" "1"
+  exim_opt_set "spfbl_begin_smtp_dkim" "1"
+  exim_opt_set "spfbl_begin_check_message_pre" "1"
+  exim_opt_set "acl_delay_unknown_hosts" "0"
+  exim_opt_set "acl_dkim_disable" "0"
+  exim_opt_set "acl_dkim_bl" "0"
+  exim_opt_set "acl_spam_scan_secondarymx" "0"
+  exim_opt_set "acl_outgoing_spam_scan" "0"
+  exim_opt_set "acl_outgoing_spam_scan_over_int" "0"
+  exim_opt_set "acl_default_exiscan" "0"
+  exim_opt_set "acl_default_spam_scan" "0"
+  exim_opt_set "acl_default_spam_scan_check" "0"
+  exim_opt_set "acl_slow_fail_block" "0"
+
+  /usr/local/cpanel/scripts/buildeximconf >/dev/null 2>&1 || true
+  /usr/local/cpanel/scripts/restartsrv_exim >/dev/null 2>&1 || true
+  /usr/local/bin/spfbl-firewall-update >/dev/null 2>&1 || true
+
+  MY_IP="\$(detect_my_ip)"
+  MY_HOST="\$(hostname -f 2>/dev/null || hostname)"
+  MY_EMAIL="\${CLIENT_REGISTER_EMAIL:-auto@\${MY_HOST}}"
+  if command -v nc >/dev/null 2>&1; then
+    RESP="\$(printf 'CLIENT ADD %s/32 %s SPFBL %s\n' "\$MY_IP" "\$MY_HOST" "\$MY_EMAIL" | nc -w 2 "\$SPFBL_ADMIN_HOST" "\$SPFBL_ADMIN_PORT" 2>/dev/null || true)"
+    if echo "\$RESP" | grep -Eq 'ADDED|ALREADY'; then
+      log "Cliente registrado no SPFBL: \$MY_IP (\$MY_HOST)"
+    else
+      log "Auto-registro não confirmou. Rode manualmente no SPFBL:"
+      log "spfbl client add \$MY_IP/32 \$MY_HOST SPFBL \$MY_EMAIL"
+    fi
+  fi
+
+  log "Integração cPanel concluída."
+}
+
+run_restore() {
+  touch "\$LOG_FILE"
+  if [ ! -d "\$BACKUP_ROOT" ]; then
+    log "Nenhum backup encontrado em \$BACKUP_ROOT"
+    exit 1
+  fi
+
+  LAST_BACKUP_SET="\$(ls -1dt "\$BACKUP_ROOT"/* 2>/dev/null | head -n1 || true)"
+  if [ -z "\$LAST_BACKUP_SET" ] || [ ! -d "\$LAST_BACKUP_SET" ]; then
+    log "Nenhum conjunto de backup disponível para restauração."
+    exit 1
+  fi
+
+  log "Restaurando último backup: \$LAST_BACKUP_SET"
+  restore_if_exists /etc/exim.conf.local
+  restore_if_exists /etc/exim.conf.localopts
+  restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
+  restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
+  restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  restore_if_exists /usr/local/bin/spfbl.cpanel.sh
+  restore_if_exists /usr/local/bin/spfbl-firewall-update
+
+  /usr/local/cpanel/scripts/buildeximconf >/dev/null 2>&1 || true
+  /usr/local/cpanel/scripts/restartsrv_exim >/dev/null 2>&1 || true
+  log "Restauração concluída."
+}
+
+case "\${1:---install}" in
+  --install) run_install ;;
+  --restore) run_restore ;;
+  *)
+    echo "Uso: \$0 [--install|--restore]"
+    exit 1
+    ;;
+esac
+EOF
+    chmod +x "$installer_path"
+
+    echo "One-liner cPanel (child/client):"
+    echo "curl -sSL ${base_url}/public/install-child-cpanel.sh | sudo bash"
 }
 
 run_autowhitelist_setup() {
@@ -940,6 +1401,10 @@ main() {
     verify_installation
     configure_firewall
     configure_spfbl_admin_account
+    configure_authorized_clients
+    setup_directadmin_integration_assets
+    setup_cpanel_integration_assets
+    print_admin_dashboard_info
     configure_store_cron
     configure_locale
     configure_timezone
