@@ -104,7 +104,7 @@ TIMEZONE="America/Sao_Paulo"
 : "${SPFBL_TLS_SELF_SIGNED:=yes}"
 : "${SPFBL_TLS_SELF_SIGNED_DAYS:=365}"
 : "${SPFBL_STARTUP_TIMEOUT:=300}"
-: "${SPFBL_AUTOWHITELIST_ENABLE:=yes}"
+: "${SPFBL_AUTOWHITELIST_ENABLE:=no}"
 : "${SPFBL_AUTOWHITELIST_REQUIRED:=no}"
 : "${DIRECTADMIN_INTEGRATION_ENABLE:=yes}"
 : "${CPANEL_INTEGRATION_ENABLE:=yes}"
@@ -1124,6 +1124,7 @@ setup_cpanel_integration_assets() {
     local child_installer_version="${CHILD_CPANEL_INSTALLER_VERSION:-1.1.0}"
     local child_installer_generated_at
     local cpanel_acl_recipient cpanel_acl_dkim cpanel_acl_message
+    local whitelist_script_src
 
     [ "${CPANEL_INTEGRATION_ENABLE:-yes}" = "yes" ] || {
         echo -e "${YELLOW}[CONFIG]${NC} Integração cPanel desativada (CPANEL_INTEGRATION_ENABLE=${CPANEL_INTEGRATION_ENABLE})."
@@ -1149,6 +1150,7 @@ setup_cpanel_integration_assets() {
     cpanel_acl_recipient="$REPO_SRC_DIR/client/spfbl_end_recipient"
     cpanel_acl_dkim="$REPO_SRC_DIR/client/spfbl_begin_smtp_dkim"
     cpanel_acl_message="$REPO_SRC_DIR/client/spfbl_begin_check_message_pre"
+    whitelist_script_src="$SCRIPT_DIR/spfbl_client_autowhitelist.sh"
     cpanel_dst="$public_dir/spfbl.cpanel.sh"
     firewall_dst="$public_dir/firewall.cpanel.sh"
 
@@ -1173,6 +1175,7 @@ setup_cpanel_integration_assets() {
     [ -f "$cpanel_acl_recipient" ] && cp -f "$cpanel_acl_recipient" "$public_dir/spfbl_end_recipient"
     [ -f "$cpanel_acl_dkim" ] && cp -f "$cpanel_acl_dkim" "$public_dir/spfbl_begin_smtp_dkim"
     [ -f "$cpanel_acl_message" ] && cp -f "$cpanel_acl_message" "$public_dir/spfbl_begin_check_message_pre"
+    [ -f "$whitelist_script_src" ] && cp -f "$whitelist_script_src" "$public_dir/spfbl_client_autowhitelist.sh"
 
     # Garante publicação do cliente SPFBL para cPanel também.
     if [ ! -f "$public_dir/spfbl-client" ]; then
@@ -1390,6 +1393,7 @@ run_install() {
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
   backup_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  backup_if_exists /var/spool/exim/autoWH
   backup_if_exists /usr/local/bin/spfbl
   backup_if_exists /usr/local/bin/spfbl.cpanel.sh
   backup_if_exists /usr/local/bin/spfbl-firewall-update
@@ -1405,15 +1409,18 @@ run_install() {
     curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_begin_smtp_dkim?v=\${CACHE_BUSTER}" -o /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
     curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_begin_check_message_pre?v=\${CACHE_BUSTER}" -o /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
     curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/firewall.cpanel.sh?v=\${CACHE_BUSTER}" -o /usr/local/bin/spfbl-firewall-update || true
+    curl -fsSL -H 'Cache-Control: no-cache' "\${BASE_URL}/public/spfbl_client_autowhitelist.sh?v=\${CACHE_BUSTER}" -o /tmp/spfbl_client_autowhitelist.sh || true
   else
     wget -qO /usr/local/bin/spfbl "\${BASE_URL}/public/spfbl-client?v=\${CACHE_BUSTER}"
     wget -qO /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient "\${BASE_URL}/public/spfbl_end_recipient?v=\${CACHE_BUSTER}"
     wget -qO /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim "\${BASE_URL}/public/spfbl_begin_smtp_dkim?v=\${CACHE_BUSTER}"
     wget -qO /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre "\${BASE_URL}/public/spfbl_begin_check_message_pre?v=\${CACHE_BUSTER}"
     wget -qO /usr/local/bin/spfbl-firewall-update "\${BASE_URL}/public/firewall.cpanel.sh?v=\${CACHE_BUSTER}" || true
+    wget -qO /tmp/spfbl_client_autowhitelist.sh "\${BASE_URL}/public/spfbl_client_autowhitelist.sh?v=\${CACHE_BUSTER}" || true
   fi
   chmod +x /usr/local/bin/spfbl
   chmod +x /usr/local/bin/spfbl-firewall-update 2>/dev/null || true
+  chmod +x /tmp/spfbl_client_autowhitelist.sh 2>/dev/null || true
 
   if ! grep -q '^spamd_address = ' /etc/exim.conf.local 2>/dev/null; then
     echo "spamd_address = ${REAL_HOSTNAME} ${SPFBL_BACKEND_HTTP_PORT:-9877} retry=30s tmo=3m" >> /etc/exim.conf.local
@@ -1458,6 +1465,19 @@ run_install() {
   /usr/local/cpanel/scripts/restartsrv_exim >/dev/null 2>&1 || true
   /usr/local/bin/spfbl-firewall-update >/dev/null 2>&1 || true
 
+  # Whitelist automation now runs on the client installer side.
+  if [ -x /tmp/spfbl_client_autowhitelist.sh ]; then
+    SPFBL_CLIENT_BIN="/usr/local/bin/spfbl" \
+    SPFBL_SERVER_HOSTNAME="\$SPFBL_ADMIN_HOST" \
+    SPFBL_SERVER_IP="\$SPFBL_ADMIN_HOST" \
+    SPFBL_POLICY_PORT="\$SPFBL_POLICY_PORT" \
+    SPFBL_ADMIN_PORT="\$SPFBL_ADMIN_PORT" \
+    SPFBL_AUTOWHITELIST_NONINTERACTIVE=1 \
+    /tmp/spfbl_client_autowhitelist.sh || log "Whitelist client-side retornou erro (não-fatal)."
+  else
+    log "Whitelist client-side script não disponível em /tmp/spfbl_client_autowhitelist.sh"
+  fi
+
   MY_IP="\$(detect_my_ip)"
   MY_HOST="\$(hostname -f 2>/dev/null || hostname)"
   MY_EMAIL="\${CLIENT_REGISTER_EMAIL:-auto@\${MY_HOST}}"
@@ -1494,6 +1514,7 @@ run_restore() {
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
   restore_if_exists /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  restore_if_exists /var/spool/exim/autoWH
   restore_if_exists /usr/local/bin/spfbl
   restore_if_exists /usr/local/bin/spfbl.cpanel.sh
   restore_if_exists /usr/local/bin/spfbl-firewall-update
@@ -1505,6 +1526,7 @@ run_restore() {
   rm -f /usr/local/cpanel/etc/exim/acls/ACL_RECIPIENT_BLOCK/spfbl_end_recipient
   rm -f /usr/local/cpanel/etc/exim/acls/ACL_SMTP_DKIM_BLOCK/spfbl_begin_smtp_dkim
   rm -f /usr/local/cpanel/etc/exim/acls/ACL_CHECK_MESSAGE_PRE_BLOCK/spfbl_begin_check_message_pre
+  rm -f /var/spool/exim/autoWH
 
   /usr/local/cpanel/scripts/buildeximconf >/dev/null 2>&1 || true
   /usr/local/cpanel/scripts/restartsrv_exim >/dev/null 2>&1 || true
@@ -1606,7 +1628,6 @@ main() {
     configure_locale
     configure_timezone
     configure_chrony
-    run_autowhitelist_setup
 
     echo -e "${GREEN}Instalação e Configuração Completa!${NC}"
 }
